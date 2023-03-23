@@ -4,10 +4,10 @@ import torch
 from torch.nn.utils import parameters_to_vector, vector_to_parameters
 from torch.distributions import MultivariateNormal, Dirichlet, Normal
 
-from laplace.utils import (parameters_per_layer, invsqrt_precision, 
+from laplace.utils import (parameters_per_layer, invsqrt_precision,
                            get_nll, validate, Kron, normal_samples)
 from laplace.curvature import AsdlGGN, BackPackGGN, AsdlHessian
-
+from tqdm import tqdm
 
 __all__ = ['BaseLaplace', 'ParametricLaplace',
            'FullLaplace', 'KronLaplace', 'DiagLaplace', 'LowRankLaplace']
@@ -37,6 +37,7 @@ class BaseLaplace:
         arguments passed to the backend on initialization, for example to
         set the number of MC samples for stochastic approximations.
     """
+
     def __init__(self, model, likelihood, sigma_noise=1., prior_precision=1.,
                  prior_mean=0., temperature=1., backend=None, backend_kwargs=None):
         if likelihood not in ['classification', 'regression']:
@@ -365,7 +366,8 @@ class ParametricLaplace(BaseLaplace):
         self.model.eval()
         self.mean = parameters_to_vector(self.model.parameters()).detach()
 
-        X, _ = next(iter(train_loader))
+        batch = next(iter(train_loader))
+        X = batch['image']
         with torch.no_grad():
             try:
                 out = self.model(X[:1].to(self._device))
@@ -375,7 +377,9 @@ class ParametricLaplace(BaseLaplace):
         setattr(self.model, 'output_size', self.n_outputs)
 
         N = len(train_loader.dataset)
-        for X, y in train_loader:
+        for batch in tqdm(train_loader):
+            X, y = batch['image'], batch['label']
+
             self.model.zero_grad()
             X, y = X.to(self._device), y.to(self._device)
             loss_batch, H_batch = self._curv_closure(X, y, N)
@@ -496,7 +500,7 @@ class ParametricLaplace(BaseLaplace):
 
         return self.log_likelihood - 0.5 * (self.log_det_ratio + self.scatter)
 
-    def __call__(self, x, pred_type='glm', link_approx='probit', n_samples=100, 
+    def __call__(self, x, pred_type='glm', link_approx='probit', n_samples=100,
                  diagonal_output=False, generator=None):
         """Compute the posterior predictive on input data `x`.
 
@@ -512,7 +516,7 @@ class ParametricLaplace(BaseLaplace):
 
         link_approx : {'mc', 'probit', 'bridge', 'bridge_norm'}
             how to approximate the classification link function for the `'glm'`.
-            For `pred_type='nn'`, only 'mc' is possible. 
+            For `pred_type='nn'`, only 'mc' is possible.
 
         n_samples : int
             number of samples for `link_approx='mc'`.
@@ -540,7 +544,7 @@ class ParametricLaplace(BaseLaplace):
 
         if pred_type == 'nn' and link_approx != 'mc':
             raise ValueError('Only mc link approximation is supported for nn prediction type.')
-        
+
         if generator is not None:
             if not isinstance(generator, torch.Generator) or generator.device != x.device:
                 raise ValueError('Invalid random generator (check type and device).')
@@ -552,7 +556,7 @@ class ParametricLaplace(BaseLaplace):
                 return f_mu, f_var
             # classification
             if link_approx == 'mc':
-                return self.predictive_samples(x, pred_type='glm', n_samples=n_samples, 
+                return self.predictive_samples(x, pred_type='glm', n_samples=n_samples,
                                                diagonal_output=diagonal_output).mean(dim=0)
             elif link_approx == 'probit':
                 kappa = 1 / torch.sqrt(1. + np.pi / 8 * f_var.diagonal(dim1=1, dim2=2))
@@ -569,11 +573,11 @@ class ParametricLaplace(BaseLaplace):
                 # optional: variance correction
                 if link_approx == 'bridge_norm':
                     f_var_diag_mean = f_var_diag.mean(dim=1)
-                    f_var_diag_mean /= torch.as_tensor([K/2], device=self._device).sqrt()
+                    f_var_diag_mean /= torch.as_tensor([K / 2], device=self._device).sqrt()
                     f_mu /= f_var_diag_mean.sqrt().unsqueeze(-1)
                     f_var_diag /= f_var_diag_mean.unsqueeze(-1)
                 sum_exp = torch.exp(-f_mu).sum(dim=1).unsqueeze(-1)
-                alpha = (1 - 2/K + f_mu.exp() / K**2 * sum_exp) / f_var_diag
+                alpha = (1 - 2 / K + f_mu.exp() / K ** 2 * sum_exp) / f_var_diag
                 return torch.nan_to_num(alpha / alpha.sum(dim=1).unsqueeze(-1), nan=1.0)
         else:
             samples = self._nn_predictive_samples(x, n_samples)
@@ -581,7 +585,7 @@ class ParametricLaplace(BaseLaplace):
                 return samples.mean(dim=0), samples.var(dim=0)
             return samples.mean(dim=0)
 
-    def predictive_samples(self, x, pred_type='glm', n_samples=100, 
+    def predictive_samples(self, x, pred_type='glm', n_samples=100,
                            diagonal_output=False, generator=None):
         """Sample from the posterior predictive on input data `x`.
         Can be used, for example, for Thompson sampling.
@@ -881,25 +885,26 @@ class KronLaplace(ParametricLaplace):
 
 
 class LowRankLaplace(ParametricLaplace):
-    """Laplace approximation with low-rank log likelihood Hessian (approximation). 
+    """Laplace approximation with low-rank log likelihood Hessian (approximation).
     The low-rank matrix is represented by an eigendecomposition (vecs, values).
     Based on the chosen `backend`, either a true Hessian or, for example, GGN
     approximation could be used.
     The posterior precision is computed as
     \\( P = V diag(l) V^T + P_0.\\)
-    To sample, compute the functional variance, and log determinant, algebraic tricks 
+    To sample, compute the functional variance, and log determinant, algebraic tricks
     are usedto reduce the costs of inversion to the that of a \\(K \times K\\) matrix
     if we have a rank of K.
-    
+
     See `BaseLaplace` for the full interface.
     """
     _key = ('all', 'lowrank')
-    def __init__(self, model, likelihood, sigma_noise=1, prior_precision=1, prior_mean=0, 
+
+    def __init__(self, model, likelihood, sigma_noise=1, prior_precision=1, prior_mean=0,
                  temperature=1, backend=AsdlHessian, backend_kwargs=None):
-        super().__init__(model, likelihood, sigma_noise=sigma_noise, 
-                         prior_precision=prior_precision, prior_mean=prior_mean, 
+        super().__init__(model, likelihood, sigma_noise=sigma_noise,
+                         prior_precision=prior_precision, prior_mean=prior_mean,
                          temperature=temperature, backend=backend, backend_kwargs=backend_kwargs)
-    
+
     def _init_H(self):
         self.H = None
 
