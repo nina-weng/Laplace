@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from torch.nn.utils import parameters_to_vector
 from torch.nn import BatchNorm1d, BatchNorm2d, BatchNorm3d
 from torch.distributions.multivariate_normal import _precision_to_scale_tril
+from tqdm import tqdm
 
 
 __all__ = ['get_nll', 'validate', 'parameters_per_layer', 'invsqrt_precision', 'kron',
@@ -21,7 +22,8 @@ def validate(laplace, val_loader, pred_type='glm', link_approx='probit', n_sampl
     laplace.model.eval()
     output_means, output_vars = list(), list()
     targets = list()
-    for X, y in val_loader:
+    for batch in tqdm(val_loader):
+        X, y = batch['image'], batch['label']
         X, y = X.to(laplace._device), y.to(laplace._device)
         out = laplace(
             X, pred_type=pred_type,
