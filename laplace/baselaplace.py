@@ -274,6 +274,7 @@ class BaseLaplace:
                 else:
                     result = loss(out_dist, targets).item()
             except RuntimeError:
+                raise Exception('Error: {}'.format(RuntimeError))
                 result = np.inf
             results.append(result)
             prior_precs.append(prior_prec)
