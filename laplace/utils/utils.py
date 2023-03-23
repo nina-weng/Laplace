@@ -22,7 +22,8 @@ def validate(laplace, val_loader, pred_type='glm', link_approx='probit', n_sampl
     laplace.model.eval()
     output_means, output_vars = list(), list()
     targets = list()
-    for batch in tqdm(val_loader):
+    for idx,batch in enumerate(tqdm(val_loader,decs='Valid Test')):
+        print(idx)
         X, y = batch['image'], batch['label']
         X, y = X.to(laplace._device), y.to(laplace._device)
         out = laplace(
@@ -37,6 +38,7 @@ def validate(laplace, val_loader, pred_type='glm', link_approx='probit', n_sampl
             output_means.append(out)
 
         targets.append(y)
+        print('finish this {}'.format(idx))
 
     if len(output_vars) == 0:
         return torch.cat(output_means, dim=0), torch.cat(targets, dim=0)
