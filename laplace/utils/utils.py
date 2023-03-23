@@ -22,7 +22,7 @@ def validate(laplace, val_loader, pred_type='glm', link_approx='probit', n_sampl
     laplace.model.eval()
     output_means, output_vars = list(), list()
     targets = list()
-    for idx,batch in enumerate(tqdm(val_loader,decs='Valid Test')):
+    for idx,batch in enumerate(tqdm(val_loader)):
         print(idx)
         X, y = batch['image'], batch['label']
         X, y = X.to(laplace._device), y.to(laplace._device)
