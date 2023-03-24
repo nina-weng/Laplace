@@ -265,6 +265,8 @@ class BaseLaplace:
                     self, val_loader, pred_type=pred_type,
                     link_approx=link_approx, n_samples=n_samples
                 )
+                targets = torch.argmax(targets, dim=1)
+                print(targets.shape,targets)
                 if self.likelihood == 'regression':
                     out_mean, out_var = out_dist
                     if loss_with_var:
